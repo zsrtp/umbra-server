@@ -117,6 +117,7 @@ resource "aws_iam_role" "gha" {
           Action = [
             "iam:GetPolicy",
             "iam:GetOpenIDConnectProvider",
+            "iam:ListOpenIDConnectProviders",
           ]
           Resource = "*"
         },
