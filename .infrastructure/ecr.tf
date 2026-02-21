@@ -1,6 +1,6 @@
 resource "aws_ecr_repository" "umbra" {
   name                 = "umbra-server"
-  image_tag_mutability = "MUTABLE"
+  image_tag_mutability = "IMMUTABLE"
   force_delete         = true
   tags                 = local.iac_tags
 }

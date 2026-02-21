@@ -18,12 +18,9 @@ resource "aws_iam_role" "gha" {
           Federated = data.aws_iam_openid_connect_provider.github.arn
         }
         Condition = {
-          StringLike = {
-            "token.actions.githubusercontent.com:sub" = "repo:zsrtp/umbra-server:*"
-          }
-          "ForAllValues:StringEquals" = {
-            "token.actions.githubusercontent.com:iss" : "https://token.actions.githubusercontent.com",
-            "token.actions.githubusercontent.com:aud" : "sts.amazonaws.com"
+          StringEquals = {
+            "token.actions.githubusercontent.com:sub" = "repo:zsrtp/umbra-server:ref:refs/heads/main"
+            "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
           }
         }
       },
@@ -47,7 +44,21 @@ resource "aws_iam_role" "gha" {
         {
           Sid    = "ECR"
           Effect = "Allow"
-          Action = "ecr:*"
+          Action = [
+            "ecr:BatchCheckLayerAvailability",
+            "ecr:BatchGetImage",
+            "ecr:CompleteLayerUpload",
+            "ecr:DescribeRepositories",
+            "ecr:GetDownloadUrlForLayer",
+            "ecr:GetLifecyclePolicy",
+            "ecr:GetRepositoryPolicy",
+            "ecr:InitiateLayerUpload",
+            "ecr:ListTagsForResource",
+            "ecr:PutImage",
+            "ecr:PutLifecyclePolicy",
+            "ecr:TagResource",
+            "ecr:UploadLayerPart",
+          ]
           Resource = "arn:aws:ecr:${var.aws_region}:${var.aws_account_id}:repository/umbra-server"
         },
         {
@@ -74,6 +85,37 @@ resource "aws_iam_role" "gha" {
             "ec2:ModifyInstanceAttribute",
           ]
           Resource = "*"
+          Condition = {
+            StringEquals = {
+              "aws:ResourceTag/iac_type" = "umbra-server"
+            }
+          }
+        },
+        {
+          Sid    = "EC2RunInstances"
+          Effect = "Allow"
+          Action = [
+            "ec2:RunInstances",
+            "ec2:CreateTags",
+          ]
+          Resource = "*"
+          Condition = {
+            StringEquals = {
+              "aws:RequestTag/iac_type" = "umbra-server"
+            }
+          }
+        },
+        {
+          Sid    = "EC2RunInstancesDeps"
+          Effect = "Allow"
+          Action = "ec2:RunInstances"
+          Resource = [
+            "arn:aws:ec2:${var.aws_region}::image/*",
+            "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:subnet/*",
+            "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:security-group/*",
+            "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:network-interface/*",
+            "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:volume/*",
+          ]
         },
         {
           Sid    = "IAMRoles"
@@ -122,12 +164,26 @@ resource "aws_iam_role" "gha" {
           Resource = "*"
         },
         {
-          Sid    = "SSM"
+          Sid    = "SSMSendCommand"
           Effect = "Allow"
-          Action = [
-            "ssm:SendCommand",
-            "ssm:GetCommandInvocation",
-          ]
+          Action = "ssm:SendCommand"
+          Resource = "arn:aws:ssm:${var.aws_region}::document/AWS-RunShellScript"
+        },
+        {
+          Sid    = "SSMSendCommandInstances"
+          Effect = "Allow"
+          Action = "ssm:SendCommand"
+          Resource = "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:instance/*"
+          Condition = {
+            StringEquals = {
+              "ssm:resourceTag/iac_type" = "umbra-server"
+            }
+          }
+        },
+        {
+          Sid    = "SSMGetInvocation"
+          Effect = "Allow"
+          Action = "ssm:GetCommandInvocation"
           Resource = "*"
         },
         {
