@@ -1,0 +1,96 @@
+permissions:
+  id-token: write
+  contents: read
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/gha-role-umbra-server
+        aws-region: ${{ secrets.AWS_REGION }}
+
+    - name: Login to ECR
+      id: ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v3
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        push: true
+        platforms: linux/arm64
+        tags: ${{ steps.ecr.outputs.registry }}/umbra-server:${{ github.sha }}
+
+    - uses: opentofu/setup-opentofu@v1
+      with:
+        tofu_version: 1.11.5
+
+    - name: Deploy infrastructure
+      run: |
+        cd .infrastructure
+        tofu init \
+          -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+          -backend-config="region=${{ secrets.AWS_REGION }}"
+        tofu apply -auto-approve \
+          -var="image_tag=${{ github.sha }}" \
+          -var='allowed_ips=${{ secrets.ALLOWED_IPS }}' \
+          -var="vpc_id=${{ secrets.VPC_ID }}" \
+          -var="subnet_id=${{ secrets.SUBNET_ID }}" \
+          -var="aws_account_id=${{ secrets.AWS_ACCOUNT_ID }}" \
+          -var="tf_state_bucket=${{ secrets.TF_STATE_BUCKET }}" \
+          -var="aws_region=${{ secrets.AWS_REGION }}"
+
+    - name: Deploy container via SSM
+      run: |
+        cd .infrastructure
+        INSTANCE_ID=$(tofu output -raw instance_id)
+        ECR_URL=$(tofu output -raw ecr_repository_url)
+        ECR_REGISTRY="${ECR_URL%%/*}"
+        IMAGE="${ECR_URL}:${{ github.sha }}"
+
+        cat > /tmp/ssm-command.json <<EOF
+        {
+          "InstanceIds": ["${INSTANCE_ID}"],
+          "DocumentName": "AWS-RunShellScript",
+          "TimeoutSeconds": 300,
+          "Parameters": {
+            "commands": [
+              "set -e",
+              "while ! docker info >/dev/null 2>&1; do sleep 5; done",
+              "aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | docker login --username AWS --password-stdin ${ECR_REGISTRY}",
+              "docker stop umbra-server 2>/dev/null || true",
+              "docker rm umbra-server 2>/dev/null || true",
+              "docker pull ${IMAGE}",
+              "docker run -d --name umbra-server -p 52224:52224/udp --restart unless-stopped ${IMAGE}",
+              "docker image prune -af"
+            ]
+          }
+        }
+        EOF
+
+        COMMAND_ID=$(aws ssm send-command \
+          --cli-input-json file:///tmp/ssm-command.json \
+          --query 'Command.CommandId' \
+          --output text)
+
+        aws ssm wait command-executed \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$INSTANCE_ID"
+
+        echo "Deployed to $(tofu output -raw public_ip):52224"
